@@ -345,6 +345,9 @@ Acompaño a equipos de operaciones a pasar de la curiosidad al resultado: ingeni
           <sc-for list="{{ chatMessages }}" as="msg" hint-placeholder-count="2">
             <div style="{{ msg.style }}">{{ msg.text }}</div>
           </sc-for>
+          <sc-if value="{{ chatBusy }}">
+            <div style="align-self:flex-start;max-width:85%;background:var(--color-surface);border:1px solid var(--color-divider);border-radius:0;padding:8px 12px;font-size:14px;line-height:1.4;opacity:.7">Escribiendo…</div>
+          </sc-if>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 16px 12px">
           <button type="button" class="tag tag-outline" data-target="cursos" onClick="{{ quickChatAction }}">Ver cursos</button>
@@ -436,6 +439,7 @@ class Component extends DCLogic {
       courseDialog: { open: false, course: '', submitted: false, form: { nombre: '', apellido: '', correo: '', whatsapp: '' }, errors: {} },
       chatOpen: false,
       chatInput: '',
+      chatBusy: false,
       chatMessages: [
         { from: 'bot', text: 'Hola, soy AsesorIA. Puedo ayudarte a elegir un curso, agendar una asesoría o responder dudas rápidas. ¿En qué te ayudo?' }
       ]
@@ -477,13 +481,38 @@ class Component extends DCLogic {
     return 'Gracias por tu mensaje. Para una respuesta detallada, escríbeme por WhatsApp o correo — te contesto personalmente en menos de 24 horas hábiles.';
   }
 
-  sendChatMessage = () => {
+  sendChatMessage = async () => {
     const text = this.state.chatInput.trim();
-    if (!text) return;
-    const reply = this.botReplyFor(text);
+    if (!text || this.state.chatBusy) return;
+
+    const history = [...this.state.chatMessages, { from: 'user', text }];
+    this.setState({ chatMessages: history, chatInput: '', chatBusy: true });
+
+    const payload = history.map(m => ({ role: m.from === 'user' ? 'user' : 'model', text: m.text }));
+
+    let reply;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: payload }),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      const data = await r.json().catch(() => null);
+      reply = (data && typeof data.reply === 'string' && data.reply.trim()) ? data.reply : null;
+      if (!reply && r.status === 429 && data && data.error) reply = data.error;
+    } catch (e) {
+      reply = null;
+    }
+
+    if (!reply) reply = this.botReplyFor(text);
+
     this.setState(s => ({
-      chatMessages: [...s.chatMessages, { from: 'user', text }, { from: 'bot', text: reply }],
-      chatInput: ''
+      chatMessages: [...s.chatMessages, { from: 'bot', text: reply }],
+      chatBusy: false
     }));
   };
 
@@ -742,6 +771,7 @@ class Component extends DCLogic {
 
       chatOpen: this.state.chatOpen,
       chatInput: this.state.chatInput,
+      chatBusy: this.state.chatBusy,
       chatMessages: this.state.chatMessages.map(m => ({
         text: m.text,
         style: m.from === 'bot'
